@@ -1,0 +1,13 @@
+{
+    "telegram_token": "YOU_TOKEN",
+    "caldav_url": "https://caldav.domain.com",
+    "caldav_username": "username",
+    "caldav_password": "password",
+    "price_url": "https://price.domain.com/price.html",
+    "calendar_name": "Work",
+    "log_file": "bot.log",
+    "users_file": "users.json",
+    "admin_ids": [123456, 654321],
+    "admin_id": 123456,
+    "phone":  "+71234567890"
+}
