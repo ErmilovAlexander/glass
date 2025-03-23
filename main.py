@@ -7,6 +7,7 @@ import pytz
 import locale
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.helpers import escape_markdown
 import json
 import os
 
@@ -274,12 +275,18 @@ async def subscribers_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message += "❌ Нет подписчиков."
     else:
         for sub in subscribers:
-            username_display = f"🔗 @{sub['username']}" if sub['username'] else "🔗 Без юзернейма"
+            name = escape_markdown(sub['name'], version=2)
+            user_id = sub['id']
+            date_subscribed = escape_markdown(sub['date_subscribed'], version=2)
+            username = escape_markdown(sub['username'], version=2) if sub['username'] else "Без юзернейма"
+            username_display = f"🔗 @{username}" if sub['username'] else "🔗 Без юзернейма"
+
             message += (
-                f"👤 *{sub['name']}* (ID: `{sub['id']}`)\n"
-                f"📅 Подписался: {sub['date_subscribed']}\n"
+                f"👤 *{name}*\n"
+                f"\\(ID: `{user_id}`\\)\n"
+                f"📅 Подписался: {date_subscribed}\n"
                 f"{username_display}\n"
-                f"-----------------------------\n"
+                f"{'\\-' * 30}\n"
             )
 
     # Кнопки для навигации
@@ -289,8 +296,8 @@ async def subscribers_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📞 Контакты", callback_data="contacts_button")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_markup)
+    
+    await update.message.reply_text(message, parse_mode="MarkdownV2", reply_markup=reply_markup)
 
 async def update_calendar_after_sync(message, year, month, cal):
     """Фоновая задача обновления календаря после синхронизации с Yandex Календарем."""
