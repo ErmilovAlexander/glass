@@ -9,5 +9,9 @@
     "users_file": "users.json",
     "admin_ids": [123456, 654321],
     "admin_id": 123456,
-    "phone":  "+71234567890"
+    "phone":  "+71234567890",
+    "github_repo_url": "https://<TOKEN>@github.com/yourusername/yourrepo.git",
+    "github_branch": "main",
+    "github_local_path": "repo_clone",
+    "github_remote_dir": "."
 }

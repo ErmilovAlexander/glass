@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Прайс-лист</title>
+    <link rel="icon" type="image/x-icon" href="images.ico">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Dancing+Script:wght@500&display=swap');
+
+        body {
+            font-family: 'Dancing Script', cursive;
+            text-align: center;
+            background-color: #f9f9f9;
+            font-size: 18px;
+        }
+        h1 {
+            color: #333;
+            font-size: 28px;
+        }
+        h2 {
+            color: #444;
+            margin-top: 30px;
+            font-size: 24px;
+        }
+        table {
+            width: 80%;
+            margin: 20px auto;
+            border-collapse: collapse;
+            background: white;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th {
+            background-color: #e91e63;
+            color: white;
+            font-size: 16px;
+        }
+        td {
+            font-size: 18px;
+        }
+        .note {
+            margin-top: 20px;
+            font-style: italic;
+            color: #777;
+        }
+        .footer {
+            margin-top: 30px;
+            font-size: 20px;
+        }
+        .footer a {
+            text-decoration: none;
+            color: #e91e63;
+            font-weight: bold;
+        }
+        .qr-container {
+            margin-top: 20px;
+        }
+        img.qr {
+            width: 150px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Прайс-лист</h1>
+    <p class="note">Актуально с 01.07.2024</p>
+
+    <h2>Наращивание ресниц</h2>
+    <table>
+        <tr>
+            <th>Услуга</th>
+            <th>Цена (₽)</th>
+        </tr>
+        <tr><td>Уголки</td><td>2200</td></tr>
+        <tr><td>1D</td><td>2500</td></tr>
+        <tr><td>1.5D</td><td>2700</td></tr>
+        <tr><td>2D</td><td>2800</td></tr>
+        <tr><td>2.5D</td><td>3000</td></tr>
+        <tr><td>3D</td><td>3100</td></tr>
+        <tr><td>4D</td><td>3400</td></tr>
+        <tr><td>Цветные ресницы, блестки, лучики</td><td>+300</td></tr>
+    </table>
+
+    <h2>Снятие</h2>
+    <table>
+        <tr>
+            <th>Услуга</th>
+            <th>Цена (₽)</th>
+        </tr>
+        <tr><td>Моей работы с последующим наращиванием</td><td>Бесплатно</td></tr>
+        <tr><td>Моей работы без последующего наращивания</td><td>300</td></tr>
+        <tr><td>Работы другого мастера</td><td>300</td></tr>
+    </table>
+
+
+    <div class="qr-container">
+        <h2>Перейти в Telegram-бот</h2>
+        <a href="https://t.me/LashesButovo_bot">
+            <img src="https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=https://t.me/LashesButovo_bot" class="qr" alt="QR-код Telegram">
+        </a>
+    </div>
+
+    <p class="footer">
+        <a href="https://t.me/LashesButovo_bot">🔙 Вернуться в бота</a>
+    </p>
+</body>
+</html>

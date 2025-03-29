@@ -6,7 +6,7 @@ from datetime import datetime, time, timedelta
 import pytz
 import locale
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, ConversationHandler,MessageHandler,filters
 from telegram.helpers import escape_markdown
 import json
 import os
@@ -45,6 +45,42 @@ logger = logging.getLogger(__name__)
 TZ = pytz.timezone("Europe/Moscow")
 locale.setlocale(locale.LC_TIME, 'ru_RU.UTF-8')
 
+
+from git import Repo
+import shutil
+
+def upload_price_to_github():
+    repo_url = config.get("github_repo_url")
+    branch = config.get("github_branch", "main")
+    local_path = config.get("github_local_path", "repo_clone")
+    remote_dir = config.get("github_remote_dir", ".")
+
+    if not all([repo_url, branch, local_path, remote_dir]):
+        logger.error("❌ Не указаны параметры GitHub в config.json")
+        return
+
+    # Удаляем старый клон (если был)
+    if os.path.exists(local_path):
+        shutil.rmtree(local_path)
+
+    try:
+        logger.info("📦 Клонируем репозиторий GitHub...")
+        repo = Repo.clone_from(repo_url, local_path, branch=branch)
+
+        # Копируем price.html
+        dst_path = os.path.join(local_path, remote_dir)
+        os.makedirs(dst_path, exist_ok=True)
+        shutil.copy("price.html", os.path.join(dst_path, "price.html"))
+
+        # Git: add, commit, push
+        repo.git.add(A=True)
+        repo.index.commit("🔄 Обновление прайса из Telegram-бота")
+        repo.remote().push()
+        logger.info("✅ price.html успешно загружен в GitHub!")
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка при выгрузке в GitHub: {e}")
+        
 class IrCalendar:
     def __init__(self):
         self.caldav_url = CALDAV_URL
@@ -631,6 +667,162 @@ async def send_price_html2(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(file_path, "rb") as file:
         await send_method(file, caption="📄 Откройте файл, чтобы посмотреть прайс-лист.", reply_markup=get_main_menu())
 
+EDIT_PRICE, EDIT_ITEM, EDIT_FIELD = range(3)
+price_items = []  # Глобальный список для хранения услуг
+
+def parse_html_price():
+    """Парсит HTML и возвращает список [(раздел, услуга, цена)]"""
+    from bs4 import BeautifulSoup
+    with open("price.html", "r", encoding="utf-8") as f:
+        soup = BeautifulSoup(f, "html.parser")
+
+    result = []
+    current_section = None
+    for tag in soup.find_all(["h2", "tr"]):
+        if tag.name == "h2":
+            current_section = tag.text.strip()
+        elif tag.name == "tr":
+            cols = tag.find_all("td")
+            if len(cols) == 2:
+                result.append((current_section, cols[0].text.strip(), cols[1].text.strip()))
+    return result
+
+
+async def edit_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id not in ADMIN_IDS:
+        await update.message.reply_text("⛔ Доступ запрещён.")
+        return ConversationHandler.END
+
+    global price_items
+    price_items = parse_html_price()
+
+    keyboard = [
+        [InlineKeyboardButton(f"{name} — {price}", callback_data=f"edit_{i}")]
+        for i, (_, name, price) in enumerate(price_items)
+    ]
+    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit")])
+    keyboard.append([InlineKeyboardButton("📅 Календарь", callback_data="calendar_open")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text("🛠 Выберите услугу для редактирования:", reply_markup=reply_markup)
+    return EDIT_ITEM
+
+async def edit_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cancel_edit":
+        await query.edit_message_text("❌ Редактирование отменено.")
+        return ConversationHandler.END
+
+    index = int(query.data.split("_")[1])
+    context.user_data["edit_index"] = index
+    section, name, price = price_items[index]
+
+    keyboard = [
+        [InlineKeyboardButton("✏️ Изменить название", callback_data="edit_name")],
+        [InlineKeyboardButton("💰 Изменить цену", callback_data="edit_price")],
+        [InlineKeyboardButton("💾 Сохранить", callback_data="save_edit")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit")]
+    ]
+    text = f"🔧 Вы выбрали: *{name}* — *{price}* (в разделе _{section}_)"
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return EDIT_FIELD
+
+async def edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    action = query.data
+
+    if action == "edit_name":
+        context.user_data["edit_field"] = "name"
+        await query.edit_message_text("✏️ Введите новое название:")
+        return EDIT_FIELD
+
+    elif action == "edit_price":
+        context.user_data["edit_field"] = "price"
+        await query.edit_message_text("💰 Введите новую цену:")
+        return EDIT_FIELD
+
+    elif action == "save_edit":
+        # Сохраняем HTML
+        update_price_html()
+        upload_price_to_github()  # 👈 ДОБАВЬ ЭТО
+        # Заново загружаем price_items
+        global price_items
+        price_items = parse_html_price()
+
+        # Кнопки
+        keyboard = [
+            [InlineKeyboardButton(f"{name} — {price}", callback_data=f"edit_{i}")]
+            for i, (_, name, price) in enumerate(price_items)
+        ]
+        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit")])
+
+        await query.edit_message_text(
+            "✅ Изменения сохранены. Выберите услугу для редактирования:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return EDIT_ITEM
+
+    elif action == "cancel_edit":
+        await query.edit_message_text("❌ Редактирование отменено.")
+        return ConversationHandler.END
+
+
+
+async def receive_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    index = context.user_data.get("edit_index")
+    field = context.user_data.get("edit_field")
+    new_value = update.message.text.strip()
+
+    if field == "name":
+        price_items[index] = (price_items[index][0], new_value, price_items[index][2])
+    elif field == "price":
+        price_items[index] = (price_items[index][0], price_items[index][1], new_value)
+
+    # Показываем обновлённые данные и кнопки
+    section, name, price = price_items[index]
+    text = f"🔧 Вы редактируете: *{name}* — *{price}* (в разделе _{section}_)"
+
+    keyboard = [
+        [InlineKeyboardButton("✏️ Изменить название", callback_data="edit_name")],
+        [InlineKeyboardButton("💰 Изменить цену", callback_data="edit_price")],
+        [InlineKeyboardButton("💾 Сохранить", callback_data="save_edit")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="cancel_edit")]
+    ]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return EDIT_FIELD
+
+
+def update_price_html():
+    from bs4 import BeautifulSoup
+    with open("price.html", "r", encoding="utf-8") as f:
+        soup = BeautifulSoup(f, "html.parser")
+
+    tables = soup.find_all("table")
+    index = 0
+
+    for table in tables:
+        for tr in table.find_all("tr")[1:]:  # Пропускаем заголовок
+            section, name, price = price_items[index]
+            tds = tr.find_all("td")
+            if len(tds) == 2:
+                tds[0].string = name
+                tds[1].string = price
+            index += 1
+
+    # Перезаписываем тот же самый файл
+    import shutil
+    shutil.copy("price.html", f"price_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
+
+    with open("price.html", "w", encoding="utf-8") as f:
+        f.write(str(soup))
+    #new_filename = f"price_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.html"
+    #with open(new_filename, "w", encoding="utf-8") as f:
+    #    f.write(str(soup))
+
+
 def main():
     """Запуск бота."""
     logger.info("Bot started.")
@@ -653,6 +845,19 @@ def main():
     application.add_handler(CommandHandler("price_html", send_price_html))
     application.add_handler(CallbackQueryHandler(send_price_html, pattern="price_html"))
 
+    edit_conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("edit_price", edit_price)],
+            states={
+                EDIT_ITEM: [CallbackQueryHandler(edit_item, pattern=r"^edit_\d+$|^cancel_edit$")],
+                EDIT_FIELD: [
+                    CallbackQueryHandler(edit_field, pattern=r"^edit_name$|^edit_price$|^save_edit$|^cancel_edit$"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, receive_input)
+                ]
+            },
+            fallbacks=[]
+        )
+
+    application.add_handler(edit_conv_handler)
 
     application.run_polling()
 
