@@ -66,9 +66,24 @@
         img.qr {
             width: 150px;
         }
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.4; }
+            100% { opacity: 1; }
+        }
+
+        .price-warning {
+            margin-top: 20px;
+            color: #e91e63;
+            font-weight: bold;
+            font-size: 20px;
+            animation: pulse 2s infinite;
+            }
+
     </style>
 </head>
 <body>
+<p class="price-warning">⚠️ Повышение прайса с 1 июня 2025</p>
 <h1>Прайс-лист</h1>
 <p class="note">Актуально с 01.07.2024</p>
 <h2>Наращивание ресниц</h2>
