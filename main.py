@@ -219,6 +219,18 @@ def generate_calendar(year, month, days_status, mode="auto"):
 
         # Изменяем отображение дней
         if status == "✅":
+            day_text = f"{day}"
+            callback_data = f"day_{year}_{month}_{day}"
+        elif status == "⛔":
+            day_text = f"❌"
+            callback_data = "none"  # ❌ нельзя нажать
+        else:
+            day_text = f"{day}"
+            callback_data = "none"
+
+        row.append(InlineKeyboardButton(day_text, callback_data=callback_data))
+        """
+        if status == "✅":
             day_text = f"{day}"  # Свободный день
         elif status == "⛔":
             day_text = f"❌"  # Занятый день
@@ -226,7 +238,7 @@ def generate_calendar(year, month, days_status, mode="auto"):
             day_text = f"{day}"  # Неизвестный статус
 
         row.append(InlineKeyboardButton(day_text, callback_data=f"day_{year}_{month}_{day}"))
-
+"""
         # Завершаем строку после 7 кнопок (неделя)
         if len(row) == max_buttons_per_row:
             days_buttons.append(row)
