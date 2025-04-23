@@ -617,7 +617,8 @@ def generate_calendar(year, month, days_status, mode="auto"):
 
         # Изменяем отображение дней
         if current_date < today:
-            day_text = f"{day}"
+            day_text = "❌"
+            #day_text = f"{day}"
             callback_data = "none"
         elif status == "✅":
             day_text = f"{day}"
