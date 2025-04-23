@@ -418,24 +418,6 @@ async def admin_open_month_button(update: Update, context: ContextTypes.DEFAULT_
     else:
         await query.edit_message_text(f"ℹ️ Месяц *{key}* уже был открыт.", parse_mode="Markdown")
 
-#async def open_month_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-#    user_id = update.effective_user.id
-#    if user_id not in ADMIN_IDS:
-#        await update.message.reply_text("⛔ У вас нет прав.")
-#        return
-#
-#    closed_months = get_closed_months()
-#    if not closed_months:
-#        await update.message.reply_text("✅ Все ближайшие месяцы уже открыты.")
-#        return
-#
-#    keyboard = [
-#        [InlineKeyboardButton(name, callback_data=f"admin_open_{key}")]
-#        for key, name in closed_months
-#    ]
-#    reply_markup = InlineKeyboardMarkup(keyboard)
-#
-#    await update.message.reply_text("🔓 Выберите месяц для открытия:", reply_markup=reply_markup)
 async def open_month_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
@@ -634,14 +616,6 @@ def generate_calendar(year, month, days_status, mode="auto"):
         status = days_status.get(day, "❓")
 
         # Изменяем отображение дней
-        #if status == "✅":
-        #    day_text = f"{day}"  # Свободный день
-        #elif status == "⛔":
-        #    day_text = f"❌"  # Занятый день
-        #else:
-        #    day_text = f"{day}"  # Неизвестный статус
-
-        #row.append(InlineKeyboardButton(day_text, callback_data=f"day_{year}_{month}_{day}"))
         if current_date < today:
             day_text = f"{day}"
             callback_data = "none"
@@ -743,45 +717,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = await update.message.reply_text("📅 Выберите дату:", reply_markup=full_reply_markup)
 
     asyncio.create_task(update_calendar_after_sync(message, now.year, now.month, cal))
-
-
-#async def subscribers_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
-#    """Команда /subscribers: Показывает список подписчиков (только для администраторов)."""
-#    user_id = update.message.from_user.id
-#    if user_id not in ADMIN_IDS:
-#        await update.message.reply_text("⛔ У вас нет прав для выполнения этой команды.")
-#        return
-#
-#    count = len(subscribers)
-#    message = f"📊 *Всего подписчиков: {count}*\n\n"
-#
-#    if count == 0:
-#        message += "❌ Нет подписчиков."
-#    else:
-#        for sub in subscribers:
-#            name = escape_markdown(sub['name'], version=2)
-#            user_id = sub['id']
-#            date_subscribed = escape_markdown(sub['date_subscribed'], version=2)
-#            username = escape_markdown(sub['username'], version=2) if sub['username'] else "Без юзернейма"
-#            username_display = f"🔗 @{username}" if sub['username'] else "🔗 Без юзернейма"
-#
-#            message += (
-#                f"👤 *{name}*\n"
-#                f"\\(ID: `{user_id}`\\)\n"
-#                f"📅 Подписался: {date_subscribed}\n"
-#                f"{username_display}\n"
-#                f"{'\\-' * 30}\n"
-#            )
-#
-#    # Кнопки для навигации
-#    keyboard = [
-#        [InlineKeyboardButton("📅 Текущий месяц", callback_data="calendar_open")],
-#        [InlineKeyboardButton("💵 Прайс", callback_data="price_button")],
-#        [InlineKeyboardButton("📞 Контакты", callback_data="contacts_button")]
-#    ]
-#    reply_markup = InlineKeyboardMarkup(keyboard)
-#    
-#    await update.message.reply_text(message, parse_mode="MarkdownV2", reply_markup=reply_markup)
 
 async def subscribers_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -990,10 +925,6 @@ async def contacts_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     phone_number = PHONE
     await query.message.reply_text(f"📞 Наш номер телефона: {phone_number}", reply_markup=get_main_menu(int(query.from_user.id)))
 
-# Список ID администраторов
-#ADMIN_IDS = [5328759519,173968578]  # Добавьте ID всех администраторов
-
-#ADMIN_ID = 5328759519  # ID администратора
 
 def load_users():
     """Загружает список подписчиков из файла."""
@@ -1030,55 +961,6 @@ async def book_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Подтверждение пользователю
     await query.edit_message_text(f"✅ Запрос на запись отправлен {selected_date}!")
 
-
-#async def book_appointment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-#    query = update.callback_query
-#    await query.answer()
-#
-#    _, year, month, day, slot = query.data.split("_")
-#    selected_date = datetime(int(year), int(month), int(day)).strftime('%d.%m.%Y')
-#
-#    user = query.from_user
-#    user_id = user.id
-#    user_name = user.full_name
-#
-#    booking_id = str(uuid.uuid4())
-#    pending_bookings[booking_id] = {
-#        "user_id": user_id,
-#        "name": user_name,
-#        "date": selected_date,
-#        "slot": slot
-#    }
-#
-#    # 💾 Сохраняем в файл
-#    bookings = load_bookings()
-#    bookings.append({
-#        "id": booking_id,
-#        "user_id": user_id,
-#        "name": user_name,
-#        "date": selected_date,
-#        "slot": slot,
-#        "status": "pending"
-#    })
-#    save_bookings(bookings)
-#
-#    # 🔔 Админу
-#    buttons = [
-#        [
-#            InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm_{booking_id}"),
-#            InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{booking_id}")
-#        ]
-#    ]
-#    text = (
-#        f"📬 *Новая заявка*\n"
-#        f"👤 [{user_name}](tg://user?id={user_id})\n"
-#        f"📅 *Дата:* {selected_date}\n"
-#        f"🕒 *Время:* {slot}"
-#    )
-#    await context.bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(buttons))
-#
-#    # 🔄 Пользователю
-#    await query.edit_message_text(f"🕒 Запрос на запись отправлен!\n\nОжидайте подтверждения администратора.")
 
 async def book_appointment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1226,19 +1108,6 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
         history.append(slot_info)
         profiles[user_key]["history"] = history
         save_profiles(profiles)
-    #if user_key in profiles:
-    #    # добавим запись в историю
-    #    profile = profiles[user_key]
-    #    history = profile.get("history", [])
-    #    history.append(slot_info)
-    #    profile["history"] = history
-    #    save_profiles(profiles)
-    #else:
-    #    # предложим заполнить профиль
-    #    context.user_data["confirm_booking_id"] = booking_id
-    #    await context.bot.send_message(user_id, "📋 Чтобы в будущем записываться быстрее, пожалуйста, заполните ваш профиль.\n\nВведите ваше *имя*:")
-    #    return
-
 
 async def show_bookings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1514,7 +1383,6 @@ def main():
     application.add_handler(CallbackQueryHandler(change_month, pattern=r"^(prev|next)_month_"))
     application.add_handler(CallbackQueryHandler(day_selected, pattern=r"^day_\d+_\d+_\d+"))
     application.add_handler(CallbackQueryHandler(calendar_open, pattern="calendar_open"))
-    #application.add_handler(CallbackQueryHandler(calendar_back, pattern="calendar_back"))
     application.add_handler(CallbackQueryHandler(calendar_back, pattern=r"^calendar_back_\d+_\d+$"))
 
     setup_secret_easteregg(application)
@@ -1532,7 +1400,6 @@ def main():
     application.add_handler(get_faq_menu_handler())
     application.add_handler(CommandHandler("open_month", open_month_command))
     application.add_handler(CallbackQueryHandler(admin_open_month_button, pattern=r"^admin_open_\d{4}-\d{2}$"))
-   # application.add_handler(CallbackQueryHandler(handle_admin_response, pattern=r"^(confirm|reject)_[\w-]+$"))
     application.add_handler(CommandHandler("bookings", show_bookings))
     application.add_handler(CallbackQueryHandler(show_user_bookings, pattern="user_bookings"))
     application.add_handler(CallbackQueryHandler(user_cancel_booking, pattern=r"^user_cancel_[\w-]+$"))
@@ -1578,18 +1445,6 @@ def main():
             },
             fallbacks=[]
         )
-
-    #profile_conv = ConversationHandler(
-    #    entry_points=[],
-    #    states={
-    #        ASK_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_first_name)],
-    #        ASK_LAST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_last_name)],
-    #        ASK_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
-    #    },
-    #    fallbacks=[]
-    #)
-
-    #application.add_handler(profile_conv)
 
 
     application.add_handler(edit_conv_handler)
