@@ -627,8 +627,10 @@ def generate_calendar(year, month, days_status, mode="auto"):
     for _ in range(start_weekday):
         row.append(InlineKeyboardButton(" ", callback_data="none"))
 
+    today = datetime.now(TZ).date()
     # Заполняем календарь днями с новыми символами
     for day in range(1, last_day.day + 1):
+        current_date = datetime(year, month, day).date()
         status = days_status.get(day, "❓")
 
         # Изменяем отображение дней
@@ -640,7 +642,10 @@ def generate_calendar(year, month, days_status, mode="auto"):
         #    day_text = f"{day}"  # Неизвестный статус
 
         #row.append(InlineKeyboardButton(day_text, callback_data=f"day_{year}_{month}_{day}"))
-        if status == "✅":
+        if current_date < today:
+            day_text = f"{day}"
+            callback_data = "none"
+        elif status == "✅":
             day_text = f"{day}"
             callback_data = f"day_{year}_{month}_{day}"
         elif status == "⛔":
