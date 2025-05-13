@@ -115,7 +115,7 @@ def format_notice(raw: str) -> str:
     """Возвращает строку, выделенную жирным, капсом и с иконками."""
     txt = raw.strip().upper()
     # MarkdownV2: нужны экранирования всех спец‑символов, кроме эмодзи
-    escapable = r'_*[]()~`>#+-=|{}.!'
+    escapable = r'_*[]()~`>#+-=|{}!'
     for ch in escapable:
         txt = txt.replace(ch, f'\\{ch}')
     return f"‼️ *{txt}* ‼️"
@@ -1162,12 +1162,12 @@ async def subscribers_count(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def update_calendar_after_sync(message, year, month, cal, user_id=None):
     """Фоновая задача обновления календаря после синхронизации с Yandex Календарем."""
 
-    loading_message = await message.reply_text("⏳ Загружаем данные...")
+#    loading_message = await message.reply_text("⏳ Загружаем данные...")
     key = f"{year}-{month:02d}"
     if key not in load_open_months():
         await message.edit_text("⛔ *Этот месяц закрыт для записи*", parse_mode="Markdown")
         return
-
+    loading_message = await message.reply_text("⏳ Загружаем данные...")
     days_status = await cal.update_calendar_status(year, month)
     reply_markup = generate_calendar(year, month, days_status)
 
