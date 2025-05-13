@@ -111,6 +111,16 @@ def normalize_phone(raw: str) -> str | None:
     return '+' + digits
 # ————————————————————————————————————————
 
+def format_notice(raw: str) -> str:
+    """Возвращает строку, выделенную жирным, капсом и с иконками."""
+    txt = raw.strip().upper()
+    # MarkdownV2: нужны экранирования всех спец‑символов, кроме эмодзи
+    escapable = r'_*[]()~`>#+-=|{}.!'
+    for ch in escapable:
+        txt = txt.replace(ch, f'\\{ch}')
+    return f"‼️ *{txt}* ‼️"
+
+
 def load_waitlist() -> dict:
     if os.path.exists(WAITLIST_FILE):
         with open(WAITLIST_FILE, "r", encoding="utf-8") as f:
@@ -1221,7 +1231,8 @@ async def day_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     notice_text = load_notice()
 
     if notice_text:
-        notice_block = f"📣 *{notice_text}*\n\n"
+        #notice_block = f"📣 *{notice_text}*\n\n"
+        notice_block = format_notice(notice_text) + "\n\n" if notice_text else ""
 
     cal = IrCalendar()  # Инициализируем объект IrCalendar
     free_slots = await cal.find_free_slots_async(selected_date)
@@ -1907,7 +1918,6 @@ def main():
         entry_points=[CallbackQueryHandler(admin_notice_start, pattern="^admin_notice$")],
         states={NOTICE_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_notice_save)]},
         fallbacks=[],
-        #per_message=True,         # чтобы ловить каждое новое сообщение
         allow_reentry=True
     )
     application.add_handler(notice_conv, group=-1)
