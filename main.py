@@ -1,7 +1,10 @@
 import logging
 import asyncio
 import caldav
+import calendar
+import re
 from icalendar import Calendar
+from icalendar import Calendar as ICalCalendar, Event as ICalEvent
 from datetime import datetime, time, timedelta
 import pytz
 import locale
@@ -12,6 +15,9 @@ import json
 import os
 from faq import get_faq_handler, get_faq_callback_handler, get_faq_menu_handler
 from eyelash_secret_easteregg import setup_secret_easteregg
+from dateutil.relativedelta import relativedelta
+from datetime import date as _date
+from cryptography.fernet import Fernet
 
 # Загрузка конфигурации
 CONFIG_FILE = "config.json"
@@ -33,11 +39,17 @@ USERS_FILE = config.get("users_file", "users.json")
 ADMIN_IDS = config.get("admin_ids")
 ADMIN_ID = config.get("admin_id")
 PHONE = config.get("phone")
+WAITLIST_FILE = config.get("waitlist_file", "waitlist.json")
 OPEN_MONTHS_FILE = config.get("open_months")
 BOOKINGS_FILE = config.get("bookings")
 PROFILES_FILE = config.get("profiles")
 ASK_FIRST_NAME, ASK_LAST_NAME, ASK_PHONE = range(3)
 EDIT_USER_ID, EDIT_FIELD_CHOICE, EDIT_FIELD_INPUT = range(3)
+FERNET_KEY = config.get("fernet_key")
+INSTAGRAM_URL = config.get("instagram_url", "https://instagram.com/")
+NOTICE_FILE = config.get("notice_file", "notice.txt")
+NOTICE_STATE = 990    # уникальный int, не пересекается с другими state'ами
+
 # Настройки логирования
 logging.basicConfig(
     level=logging.DEBUG,
@@ -51,23 +63,134 @@ logger = logging.getLogger(__name__)
 TZ = pytz.timezone("Europe/Moscow")
 locale.setlocale(locale.LC_TIME, 'ru_RU.UTF-8')
 pending_bookings = {}  # должно быть глобально
-
 from git import Repo
 import shutil
 
 import uuid
 
 pending_bookings = {}  # booking_id → {user_id, name, date, slot}
+if not FERNET_KEY:
+    raise RuntimeError("В config.json должен быть указан fernet_key")
+FERNET = Fernet(FERNET_KEY.encode())
+def encrypt_bytes(b: bytes) -> bytes:
+    return FERNET.encrypt(b)
 
-def load_profiles():
-    if os.path.exists(PROFILES_FILE):
-        with open(PROFILES_FILE, "r") as f:
+def decrypt_bytes(b: bytes) -> bytes:
+    return FERNET.decrypt(b)
+
+def load_notice() -> str:
+    return open(NOTICE_FILE, "r", encoding="utf‑8").read().strip() if os.path.exists(NOTICE_FILE) else ""
+
+def save_notice(text: str):
+    with open(NOTICE_FILE, "w", encoding="utf‑8") as f:
+        f.write(text.strip())
+
+
+# ———————— Нормализация телефона ————————
+
+def normalize_phone(raw: str) -> str | None:
+    """
+    Оставляет только цифры, а затем:
+     - если 10 цифр: добавляет '7' в начало;
+     - если 11 цифр и начинается с '8': меняет '8' на '7';
+     - если 11 цифр и начинается с '7': оставляет;
+    В конце возвращает строку '+7XXXXXXXXXX' или None, если невалидно.
+    """
+    digits = re.sub(r'\D', '', raw)
+    # 10 цифр → локальный номер
+    if re.fullmatch(r'\d{10}', digits):
+        digits = '7' + digits
+    # 11 цифр, начинается с 8 → заменяем на 7
+    elif re.fullmatch(r'8\d{10}', digits):
+        digits = '7' + digits[1:]
+    # 11 цифр, начиная с 7 → корректно
+    elif re.fullmatch(r'7\d{10}', digits):
+        pass
+    else:
+        return None
+    return '+' + digits
+# ————————————————————————————————————————
+
+def load_waitlist() -> dict:
+    if os.path.exists(WAITLIST_FILE):
+        with open(WAITLIST_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
+def save_waitlist(waitlist: dict):
+    with open(WAITLIST_FILE, "w", encoding="utf-8") as f:
+        json.dump(waitlist, f, ensure_ascii=False, indent=2)
+
+async def view_waitlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = str(query.from_user.id)
+
+    waitlist = load_waitlist()
+    # ищем все даты, где пользователь есть в очереди
+    entries = [key for key, lst in waitlist.items() if user_id in lst]
+
+    if not entries:
+        await query.edit_message_text("📭 Вы ни в одной очереди ожидания не состоите.", reply_markup=get_main_menu(int(user_id)))
+        return
+
+    # строим список кнопок — одна кнопка на каждую дату
+    keyboard = []
+    for key in sorted(entries):
+        # key формат "YYYY-MM-DD" → отображаем "DD.MM.YYYY"
+        y, m, d = key.split("-")
+        date_str = f"{d}.{m}.{y}"
+        keyboard.append([
+            InlineKeyboardButton(f"{date_str} ❌ Отменить", callback_data=f"cancel_wait_{key}")
+        ])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="user_bookings")])
+
+    text = "⏳ *Ваши листы ожидания:*\n\n" + "\n".join(f"• {d}.{m}.{y}" for y,m,d in (e.split("-") for e in entries))
+    await query.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def cancel_waitlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    # query.data == "cancel_wait_YYYY-MM-DD"
+    _, _, key = query.data.partition("cancel_wait_")
+    user_id = str(query.from_user.id)
+
+    waitlist = load_waitlist()
+    lst = waitlist.get(key, [])
+    if user_id not in lst:
+        await query.edit_message_text("❌ Вы уже не в этой очереди.", reply_markup=get_main_menu(int(user_id)))
+        return
+
+    lst.remove(user_id)
+    if lst:
+        waitlist[key] = lst
+    else:
+        del waitlist[key]
+    save_waitlist(waitlist)
+
+    # подтверждаем юзеру
+    y, m, d = key.split("-")
+    date_str = f"{d}.{m}.{y}"
+    await query.edit_message_text(f"✅ Вы удалены из листа ожидания на {date_str}.", reply_markup=get_main_menu(int(user_id)))
+
+
+def load_profiles():
+    if not os.path.exists(PROFILES_FILE):
+        return {}
+    with open(PROFILES_FILE, "rb") as f:
+        encrypted = f.read()
+    try:
+        decrypted = decrypt_bytes(encrypted)
+        return json.loads(decrypted.decode("utf-8"))
+    except Exception as e:
+        logger.error("Не удалось расшифровать profiles: %s", e)
+        return {}
+
 def save_profiles(profiles):
-    with open(PROFILES_FILE, "w") as f:
-        json.dump(profiles, f, indent=4, ensure_ascii=False)
+    data = json.dumps(profiles, ensure_ascii=False).encode("utf-8")
+    encrypted = encrypt_bytes(data)
+    with open(PROFILES_FILE, "wb") as f:
+        f.write(encrypted)
 
 
 def load_bookings():
@@ -191,10 +314,39 @@ async def user_cancel_booking(update: Update, context: ContextTypes.DEFAULT_TYPE
             if b["status"] in ("pending", "confirmed"):
                 b["status"] = "cancelled"
                 save_bookings(bookings)
+                pending_bookings.pop(booking_id, None)
+                # — уведомляем первому в листе ожидания на эту дату —
+                key = datetime.strptime(b["date"], "%d.%m.%Y").strftime("%Y-%m-%d")
+                waitlist = load_waitlist()
+                queue = waitlist.get(key, [])
+                if queue:
+                    next_user = queue.pop(0)
+                    if queue:
+                        waitlist[key] = queue
+                    else:
+                        del waitlist[key]
+                    save_waitlist(waitlist)
 
-                # Удаляем из pending, если есть
-                if booking_id in pending_bookings:
-                    del pending_bookings[booking_id]
+                    await context.bot.send_message(
+                        chat_id=int(next_user),
+                        text=(
+                            f"🔔 На {b['date']} освободился слот! "
+                            "Нажмите, чтобы выбрать время:"
+                        ),
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📅 Выбрать время", callback_data="calendar_open")
+                        ]])
+                    )
+
+                # 2) Удаляем событие из календаря
+                day, month, year = map(int, b["date"].split("."))
+                hour, minute    = map(int, b["slot"].split(":"))
+                # собираем summary так же, как при создании
+                prof = load_profiles().get(str(user_id), {})
+                summary = f"{prof.get('phone','')} {prof.get('first_name','')} {prof.get('last_name','')}"
+                deleted = delete_event(year, month, day, hour, minute, summary)
+                if not deleted:
+                    logger.warning(f"[Cancel] Событие не найдено/не удалено: {summary} at {day}.{month}.{year} {hour:02d}:{minute:02d}")
 
                 await query.edit_message_text("✅ Ваша запись успешно отменена.")
 
@@ -213,37 +365,45 @@ async def admin_free_slots_month(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
 
     user_id = query.from_user.id
-    logger.info(f"[Admin] Пользователь {user_id} запросил свободные слоты на месяц")
+    if user_id not in ADMIN_IDS:
+        await query.edit_message_text("⛔ У вас нет прав.")
+        return
 
-    now = datetime.now(TZ)
+    today = datetime.now(TZ).date()
+    current_key = f"{today.year}-{today.month:02d}"
+    open_months = sorted(load_open_months())
+
+    # Список месяцев: текущий + первый следующий открытый
+    months = [current_key]
+    for key in open_months:
+        if key > current_key:
+            months.append(key)
+            break
+
     cal = IrCalendar()
-    messages = []
+    blocks = []
 
-    for day in range(1, 32):
-        try:
-            selected_date = datetime(now.year, now.month, day).date()
-            logger.debug(f"[Slots] Проверка дня: {selected_date}")
-            free_slots = await cal.find_free_slots_async(selected_date)
-            logger.debug(f"[Slots] Найдено свободных слотов на {selected_date}: {len(free_slots)}")
+    for key in months:
+        year, month = map(int, key.split("-"))
+        month_name = datetime(year, month, 1).strftime("%B %Y")
+        free_by_day = await cal.find_free_slots_month(year, month)
 
-            if free_slots:
-                formatted_slots = ", ".join(slot.strftime("%H:%M") for slot in free_slots)
-                messages.append(f"{selected_date.strftime('%d.%m')}: {formatted_slots}")
-        except ValueError as ve:
-            logger.warning(f"[Slots] Пропущена некорректная дата: {day}/{now.month}/{now.year}")
-            continue
-        except Exception as e:
-            logger.exception(f"[Slots] Ошибка при обработке {day}/{now.month}/{now.year}: {e}")
-            continue
+        lines = []
+        for day, slots in sorted(free_by_day.items()):
+            # для текущего месяца пропускаем прошедшие
+            if key == current_key and day < today.day:
+                continue
+            times = ", ".join(dt.strftime("%H:%M") for dt in slots)
+            lines.append(f"{day:02d}.{month:02d}: {times}")
 
-    if not messages:
-        text = "❌ В этом месяце нет свободных окон."
-        logger.info("[Slots] Нет свободных окошки в текущем месяце.")
-    else:
-        text = "*Свободные окошки на текущий месяц:*\n\n" + "\n".join(messages)
-        logger.info("[Slots] Свободные окошки успешно собраны.")
+        if lines:
+            blocks.append(f"*Свободные окна на {month_name}:*\n" + "\n".join(lines))
+        else:
+            blocks.append(f"❌ В {month_name} нет свободных окон.")
 
+    text = "\n\n".join(blocks)
     await query.edit_message_text(text, parse_mode="Markdown", reply_markup=get_main_menu(user_id))
+
 
 async def handle_admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -321,22 +481,29 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def ask_first_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    first_name = update.message.text.strip()
-    logger.debug(f"[Profile] Received first_name: {first_name} (user_id={update.message.from_user.id})")
-    context.user_data["first_name"] = first_name
-
+    logger.info("➡️ ask_first_name reached")
+    raw = update.message.text.strip()
+    # если пусто — берём из профиля Telegram
+    if not raw:
+        raw = update.message.from_user.first_name or ""
+    logger.debug(f"[Profile] Received first_name: {raw} (user_id={update.message.from_user.id})")
+    context.user_data["first_name"] = raw
     await update.message.reply_text("Теперь введите вашу *фамилию*:")
     return ASK_LAST_NAME
 
 async def ask_last_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    last_name = update.message.text.strip()
-    logger.debug(f"[Profile] Received last_name: {last_name} (user_id={update.message.from_user.id})")
-    context.user_data["last_name"] = last_name
-
+    logger.info("➡️ ask_last_name reached")
+    raw = update.message.text.strip()
+    # если пусто — берём из профиля Telegram
+    if not raw:
+        raw = update.message.from_user.last_name or ""
+    logger.debug(f"[Profile] Received last_name: {raw} (user_id={update.message.from_user.id})")
+    context.user_data["last_name"] = raw
     await update.message.reply_text("📱 Введите номер телефона (пример: +79001234567):")
     return ASK_PHONE
 
 async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("➡️ ask_phone reached")
     phone = update.message.text.strip()
     user_id = str(update.message.from_user.id)
 
@@ -345,38 +512,68 @@ async def ask_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Валидация
     if not phone.startswith("+7") or not phone[1:].isdigit() or len(phone) != 12:
         logger.warning(f"[Profile] Invalid phone format: {phone}")
-        await update.message.reply_text("❌ Неверный формат. Введите номер в формате +79001234567:")
+        await update.message.reply_text(
+            "❌ Неверный формат. Введите номер в формате +79001234567:"
+        )
         return ASK_PHONE
 
     try:
+        # Сохраняем профиль
         profiles = load_profiles()
         profiles[user_id] = {
             "first_name": context.user_data.get("first_name", "неизвестно"),
-            "last_name": context.user_data.get("last_name", "неизвестно"),
-            "phone": phone or "неизвестно",
-            "history": []
+            "last_name":  context.user_data.get("last_name",  "неизвестно"),
+            "phone":      phone or "неизвестно",
+            "history":    []
         }
-        # Добавим текущую запись, если есть
+
+        # Добавляем запись в историю профиля, если она есть
         booking_id = context.user_data.get("confirm_booking_id")
         bookings = load_bookings()
-        slot_info = None
         for b in bookings:
             if b["id"] == booking_id:
-                slot_info = f"{b['date']} {b['slot']}"
+                profiles[user_id]["history"].append(f"{b['date']} {b['slot']}")
                 break
-
-        if slot_info:
-            profiles[user_id]["history"].append(slot_info)
 
         save_profiles(profiles)
         logger.info(f"[Profile] Профиль сохранён для user_id={user_id}: {profiles[user_id]}")
 
-        await update.message.reply_text("✅ Профиль сохранён. Спасибо!", reply_markup=get_main_menu(user_id))
+        # Уведомляем пользователя
+        await update.message.reply_text(
+            "✅ Профиль сохранён. Спасибо!",
+            reply_markup=get_main_menu(int(user_id))
+        )
+
+        # —————————————
+        # Отправляем администратору заявку на подтверждение
+        booking = pending_bookings.get(booking_id)
+        if booking:
+            buttons = [[
+                InlineKeyboardButton("✅ Подтвердить", callback_data=f"confirm_{booking_id}"),
+                InlineKeyboardButton("❌ Отклонить", callback_data=f"reject_{booking_id}")
+            ]]
+            admin_text = (
+                f"📬 *Новая заявка*\n"
+                f"👤 [{booking['name']}](tg://user?id={booking['user_id']})\n"
+                f"📅 *Дата:* {booking['date']}\n"
+                f"🕒 *Время:* {booking['slot']}"
+            )
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=admin_text,
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        # —————————————
+
+        # Завершаем ConversationHandler
         return ConversationHandler.END
 
     except Exception as e:
         logger.exception(f"[Profile] Ошибка при сохранении профиля: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при сохранении профиля. Попробуйте позже.")
+        await update.message.reply_text(
+            "❌ Произошла ошибка при сохранении профиля. Попробуйте позже."
+        )
         return ConversationHandler.END
 
 
@@ -547,30 +744,189 @@ class IrCalendar:
         logger.info("Found free slots: %s", free_slots)
         return free_slots
 
-    async def update_calendar_status(self, year, month):
-        """Обновляет календарь, помечая дни как ✅ или ⛔."""
-        logger.info("Updating calendar status for year: %d, month: %d", year, month)
+    def _get_month_events_sync(self, start_date: _date, end_date: _date):
+        """
+        Синхронно получает все события из CalDAV между start_date и end_date.
+        Возвращает список (dtstart, dtend).
+        """
+        try:
+            client = caldav.DAVClient(url=self.caldav_url, username=self.username, password=self.password)
+            principal = client.principal()
+            calendars = principal.calendars()
+            if not calendars:
+                return []
+            for c in calendars:
+                if c.name == CALENDAR_NAME:
+                    calendar_obj = client.calendar(url=c.url)
+                    events = calendar_obj.date_search(start_date, end_date)
+                    busy = []
+                    for ev in events:
+                        gcal = Calendar.from_ical(ev.data)
+                        for comp in gcal.walk():
+                            if comp.name == "VEVENT":
+                                dtstart = self.parse_datetime(comp.get("dtstart").dt)
+                                dtend   = self.parse_datetime(comp.get("dtend").dt)
+                                if dtstart and dtend:
+                                    busy.append((dtstart, dtend))
+                    return busy
+        except Exception as e:
+            logger.error(f"Error fetching month events: {e}")
+        return []
+
+    async def get_month_events(self, year: int, month: int):
+        """
+        Асинхронно получает все события за year/month (с 1-го до 1-го следующего месяца).
+        """
+        start = _date(year, month, 1)
+        end   = (start + relativedelta(months=1))
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            self._get_month_events_sync,
+            start,
+            end
+        )
+
+    async def find_free_slots_month(self, year: int, month: int):
+        """
+        Находит свободные 3-часовые окна в диапазоне 10:00–22:00
+        для всех дней year/month за один запрос.
+        Возвращает dict: {день: [datetime1, datetime2, ...], ...}.
+        """
+        busy_events = await self.get_month_events(year, month)
+        # Группируем по дню
+        busy_by_day = {}
+        for start, end in busy_events:
+            d = start.date().day
+            busy_by_day.setdefault(d, []).append((start, end))
+
+        free_by_day = {}
+        last_day = calendar.monthrange(year, month)[1]
+        for day in range(1, last_day + 1):
+            work_start = TZ.localize(datetime.combine(_date(year, month, day), time(10, 0)))
+            work_end   = TZ.localize(datetime.combine(_date(year, month, day), time(22, 0)))
+            busy_slots = busy_by_day.get(day, [])
+            current = work_start
+            frees = []
+            while current < work_end:
+                nxt = current + timedelta(hours=3)
+                if not any(bs < nxt and be > current for bs, be in busy_slots):
+                    frees.append(current)
+                current = nxt
+            if frees:
+                free_by_day[day] = frees
+
+        return free_by_day
+
+    async def update_calendar_status(self, year: int, month: int):
+        """
+        Возвращает словарь days_status: ключ — номер дня, значение — 
+        '✅' (есть свободные слоты) или '⛔' (нет).
+        """
+        # 1) Тянем разом все свободные слоты на месяц
+        free_by_day = await self.find_free_slots_month(year, month)
+
         days_status = {}
+        today = datetime.now(TZ).date()
+        last_day = calendar.monthrange(year, month)[1]
 
-        # Для каждого дня в месяце проверяем наличие свободных слотов
-        for day in range(1, 32):
-            try:
-                selected_date = datetime(year, month, day).date()
-                free_slots = await self.find_free_slots_async(selected_date)
+        for day in range(1, last_day + 1):
+            # прошедшие дни — ❌
+            if datetime(year, month, day).date() < today:
+                days_status[day] = "❌"
+            # есть свободные — ✅
+            elif day in free_by_day:
+                days_status[day] = "✅"
+            # иначе — ⛔
+            else:
+                days_status[day] = "⛔"
 
-                if free_slots:
-                    days_status[day] = "✅"  # Если есть хотя бы один свободный слот
-                else:
-                    days_status[day] = "⛔"  # Если все слоты заняты
-
-                logger.debug("Day %d status: %s", day, days_status[day])
-            except ValueError:
-                # Если дата некорректна (например, 31 сентября), пропускаем
-                logger.warning("Invalid date: %d/%d/%d", day, month, year)
-                continue
-
-        logger.info("Updated calendar status: %s", days_status)
         return days_status
+
+def connect_calendar():
+    """Возвращает объект CalDAV-календаря по имени."""
+    client = caldav.DAVClient(url=CALDAV_URL, username=USERNAME, password=PASSWORD)
+    principal = client.principal()
+    for c in principal.calendars():
+        if c.name == CALENDAR_NAME:
+            return client.calendar(url=c.url)
+    raise Exception(f"Calendar '{CALENDAR_NAME}' not found")
+
+def is_slot_free(year: int, month: int, day: int, hour: int, minute: int, duration_hours: float) -> bool:
+    """Проверяет, свободен ли указанный интервал."""
+    cal = connect_calendar()
+    start_dt = TZ.localize(datetime(year, month, day, hour, minute))
+    end_dt   = start_dt + timedelta(hours=duration_hours)
+    events = cal.date_search(start_dt.date(), (end_dt + timedelta(days=1)).date())
+    for ev in events:
+        gcal = ICalCalendar.from_ical(ev.data)
+        for comp in gcal.walk():
+            if comp.name == "VEVENT":
+                ev_start = comp.get("dtstart").dt
+                ev_end   = comp.get("dtend").dt
+                if isinstance(ev_start, datetime) and not ev_start.tzinfo:
+                    ev_start = TZ.localize(ev_start)
+                if isinstance(ev_end, datetime) and not ev_end.tzinfo:
+                    ev_end = TZ.localize(ev_end)
+                # проверяем пересечение
+                if ev_start < end_dt and ev_end > start_dt:
+                    return False
+    return True
+
+def create_event(year: int, month: int, day: int, hour: int, minute: int,
+                 duration_hours: float, summary: str) -> bool:
+    """
+    Создаёт событие в календаре, если слот свободен.
+    summary — строка «телефон Имя Фамилия».
+    """
+    if not is_slot_free(year, month, day, hour, minute, duration_hours):
+        logger.warning(f"Slot {day}.{month}.{year} {hour:02d}:{minute:02d} occupied")
+        return False
+
+    cal = connect_calendar()
+    ical = ICalCalendar()
+    ical.add("prodid", "-//Telegram Bot//")
+    ical.add("version", "2.0")
+
+    ev = ICalEvent()
+    start_dt = TZ.localize(datetime(year, month, day, hour, minute))
+    end_dt   = start_dt + timedelta(hours=duration_hours)
+
+    ev.add("uid", str(uuid.uuid4()))
+    ev.add("dtstamp", datetime.now(TZ))
+    ev.add("dtstart", start_dt)
+    ev.add("dtend",   end_dt)
+    ev.add("summary", summary)
+
+    ical.add_component(ev)
+    cal.add_event(ical.to_ical())
+    logger.info(f"Created calendar event: {summary} at {start_dt}")
+    return True
+
+def delete_event(year: int, month: int, day: int,
+                 hour: int, minute: int,
+                 summary: str) -> bool:
+    """
+    Ищет в календаре событие с точным start_dt и summary и удаляет его.
+    Возвращает True, если найдено и удалено.
+    """
+    cal = connect_calendar()
+    start_dt = TZ.localize(datetime(year, month, day, hour, minute))
+    # ищем все события за этот день
+    events = cal.date_search(start_dt.date(), start_dt.date() + timedelta(days=1))
+    for ev in events:
+        gcal = ICalCalendar.from_ical(ev.data)
+        for comp in gcal.walk():
+            if comp.name == "VEVENT" and comp.get("summary") == summary:
+                ev_start = comp.get("dtstart").dt
+                # нормализуем timezone
+                if isinstance(ev_start, datetime) and not ev_start.tzinfo:
+                    ev_start = TZ.localize(ev_start)
+                if ev_start == start_dt:
+                    ev.delete()
+                    logger.info(f"Deleted event from calendar: {summary} at {start_dt}")
+                    return True
+    return False
 
 
 def generate_calendar(year, month, days_status, mode="auto"):
@@ -625,7 +981,8 @@ def generate_calendar(year, month, days_status, mode="auto"):
             callback_data = f"day_{year}_{month}_{day}"
         elif status == "⛔":
             day_text = "❌"
-            callback_data = "none"
+            callback_data = f"join_wait_{year}_{month}_{day}"
+            #callback_data = "none"
         else:
             day_text = f"{day}"
             callback_data = "none"
@@ -654,22 +1011,56 @@ def generate_calendar(year, month, days_status, mode="auto"):
     logger.debug("Generated calendar buttons: %s", days_buttons)
     return InlineKeyboardMarkup(days_buttons)
 
+# ─── 2.  Callback: админ нажал кнопку ───────────────────────────────────────────
+async def admin_notice_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry‑point: показывает администратору форму ввода."""
+    query = update.callback_query
+    await query.answer()
+
+    await context.bot.send_message(
+        chat_id=query.from_user.id,
+        text=("✏️ Отправьте текст объявления.\n"
+              "Напишите *off* (или 0), чтобы убрать баннер."),
+        parse_mode="Markdown"
+    )
+    return NOTICE_STATE
+
+# ─── 3.  Callback: админ прислал текст ─────────────────────────────────────────
+async def admin_notice_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Сохраняет объявление и даёт подтверждение."""
+    text = update.message.text.strip()
+
+    if text.lower() in {"off", "disable", "нет", "0"}:
+        save_notice("")
+        reply = "❌ Объявление отключено."
+    else:
+        save_notice(text)
+        reply = "✅ Объявление обновлено."
+
+    await update.message.reply_text(reply, reply_markup=get_main_menu(update.effective_user.id))
+    return ConversationHandler.END
 
 def get_main_menu(user_id=None):
     """Создает меню с основными кнопками."""
     keyboard = [
         [InlineKeyboardButton("📅 Текущий месяц", callback_data="calendar_open")],
-        #[InlineKeyboardButton("💵 Прайс", callback_data="price_button")],
+        [InlineKeyboardButton("📸 Instagram", url=INSTAGRAM_URL)],
         [InlineKeyboardButton("📄 Прайс", callback_data="price_html")],  # Новая кнопка
         [InlineKeyboardButton("📞 Контакты", callback_data="contacts_button")],
         [InlineKeyboardButton("🧑‍🎓 FAQ", callback_data="faq_menu")],
-        [InlineKeyboardButton("📋 Мои заявки", callback_data="user_bookings")],  # 👈 Новая кнопка
+        [InlineKeyboardButton("📋 Мои заявки", callback_data="user_bookings"),
+         InlineKeyboardButton("⏳ Лист ожидания", callback_data="view_waitlist")],
         [InlineKeyboardButton("📖 Мой профиль", callback_data="user_profile")]
     ]
     if user_id in ADMIN_IDS:
         keyboard.append(
             [InlineKeyboardButton("📅 Заявки на месяц", callback_data="admin_month_bookings")]
         )
+
+        keyboard.append(
+            [InlineKeyboardButton("📣 Объявление", callback_data="admin_notice")]
+        )
+
         keyboard.append(
             [InlineKeyboardButton("🕒 Свободные слоты", callback_data="admin_free_slots_month")]
         )
@@ -825,15 +1216,27 @@ async def day_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     _, year, month, day = query.data.split("_")
     selected_date = datetime(int(year), int(month), int(day)).date()
+    
+    notice_block = ""
+    notice_text = load_notice()
+
+    if notice_text:
+        notice_block = f"📣 *{notice_text}*\n\n"
 
     cal = IrCalendar()  # Инициализируем объект IrCalendar
     free_slots = await cal.find_free_slots_async(selected_date)
 
     if not free_slots:
-        message = f"⛔ На {selected_date.strftime('%d %b')} нет свободных окон."
-        keyboard = [[InlineKeyboardButton("⬅️ Назад", callback_data=f"calendar_back_{year}_{month}")]]
+        date_str = selected_date.strftime('%d.%m.%Y')
+        text = notice_block + f"⛔ На {date_str} нет свободных окон."
+        keyboard = [
+            [InlineKeyboardButton("📋 Встать в лист ожидания", callback_data=f"join_wait_{year}_{month}_{day}")],
+            [InlineKeyboardButton("⬅️ Назад",                   callback_data=f"calendar_back_{year}_{month}")]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
     else:
-        message = f"✅ Свободные окна на {selected_date.strftime('%d %b')}:\n"
+        message = notice_block + f"✅ Свободные окна на {selected_date.strftime('%d %b')}:\n"
         keyboard = []
 
         for slot in free_slots:
@@ -846,6 +1249,30 @@ async def day_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text=message, reply_markup=reply_markup)
 
+async def join_waitlist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = query.data.split("_")
+    # parts == ["join","wait","2025","4","24"]
+    _, _, year, month, day = parts
+
+    key = f"{year}-{int(month):02d}-{int(day):02d}"
+    date_str = f"{int(day):02d}.{int(month):02d}.{year}"
+    user_id = str(query.from_user.id)
+
+    waitlist = load_waitlist()
+    lst = waitlist.get(key, [])
+    if user_id in lst:
+        await query.edit_message_text(f"❗ Вы уже в очереди на {date_str}.")
+        return
+
+    lst.append(user_id)
+    waitlist[key] = lst
+    save_waitlist(waitlist)
+    await query.edit_message_text(
+        f"✅ Добавил вас в лист ожидания на {date_str}.\n"
+        "Мы уведомим вас, как только появится окно."
+    )
 
 
 async def calendar_open(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -941,8 +1368,6 @@ def save_users(users):
 
 # Загружаем подписчиков при запуске
 subscribers = load_users()
-
-
 
 async def book_slot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запись на выбранный слот."""
@@ -1061,7 +1486,6 @@ async def book_appointment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     action, booking_id = query.data.split("_", 1)
     booking = pending_bookings.get(booking_id)
 
@@ -1072,7 +1496,6 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
     user_id = booking["user_id"]
     user_name = booking["name"]
     slot_info = f"{booking['date']} в {booking['slot']}"
-
     # Обновляем статус заявки
     bookings = load_bookings()
     for b in bookings:
@@ -1092,6 +1515,27 @@ async def handle_admin_response(update: Update, context: ContextTypes.DEFAULT_TY
     # 📌 Всегда уведомляем о записи
     await context.bot.send_message(user_id, f"✅ Ваша запись на *{slot_info}* подтверждена!", parse_mode="Markdown")
     await query.edit_message_text(f"✅ Заявка на {slot_info} подтверждена.")
+
+    # --- Новый блок: создаём событие в календаре ---
+    # Парсим дату и время из booking
+    year, month, day = map(int, booking["date"].split(".")[::-1])  # 'dd.mm.YYYY'
+    hour, minute = map(int, booking["slot"].split(":"))
+    # Формируем summary из профиля
+    profiles = load_profiles()
+    prof = profiles.get(str(user_id), {})
+    phone = prof.get("phone", "")
+    name  = prof.get("first_name", "")
+    last  = prof.get("last_name", "")
+    summary = f"{phone} {name} {last}"
+
+    created = create_event(year, month, day, hour, minute, 1, summary)
+    if not created:
+        # Если слот вдруг оказался занят, сообщаем админу
+        await context.bot.send_message(
+            ADMIN_ID,
+            f"❗ Не удалось добавить событие в календарь: слот {slot_info} уже занят."
+        )
+    # --- Конец нового блока ---
 
     # 📋 Проверяем профиль
     profiles = load_profiles()
@@ -1380,6 +1824,20 @@ def main():
     logger.info("Bot started.")
     application = Application.builder().token(TOKEN).build()
 
+    booking_conv = ConversationHandler(
+        entry_points=[
+            CallbackQueryHandler(book_appointment, pattern=r"^book_\d+_\d+_\d+_\d+:\d+$")
+        ],
+        states={
+            ASK_FIRST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_first_name)],
+            ASK_LAST_NAME:  [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_last_name)],
+            ASK_PHONE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_phone)],
+        },
+        fallbacks=[],
+        per_user=True,
+    )
+    application.add_handler(booking_conv)
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(change_month, pattern=r"^(prev|next)_month_"))
     application.add_handler(CallbackQueryHandler(day_selected, pattern=r"^day_\d+_\d+_\d+"))
@@ -1391,8 +1849,6 @@ def main():
     # Обработчики для новых кнопок
     application.add_handler(CallbackQueryHandler(price_button, pattern="price_button"))
     application.add_handler(CallbackQueryHandler(contacts_button, pattern="contacts_button"))
-    application.add_handler(CallbackQueryHandler(book_appointment, pattern=r"^book_\d+_\d+_\d+_\d+:\d+$"))
-    application.add_handler(CallbackQueryHandler(book_slot, pattern=r"^book_\d+_\d+_\d+_\d+:\d+$"))
     application.add_handler(CommandHandler("subscribers", subscribers_count))
     application.add_handler(CommandHandler("price_html", send_price_html))
     application.add_handler(CallbackQueryHandler(send_price_html, pattern="price_html"))
@@ -1447,8 +1903,25 @@ def main():
             fallbacks=[]
         )
 
+    notice_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_notice_start, pattern="^admin_notice$")],
+        states={NOTICE_STATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_notice_save)]},
+        fallbacks=[],
+        #per_message=True,         # чтобы ловить каждое новое сообщение
+        allow_reentry=True
+    )
+    application.add_handler(notice_conv, group=-1)
 
     application.add_handler(edit_conv_handler)
+    application.add_handler(
+        CallbackQueryHandler(join_waitlist, pattern=r"^join_wait_\d+_\d+_\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(view_waitlist, pattern="^view_waitlist$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(cancel_waitlist, pattern=r"^cancel_wait_\d{4}-\d{2}-\d{2}$")
+    )
 
     application.run_polling()
 
